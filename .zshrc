@@ -79,9 +79,9 @@ ZSH_THEME="powerlevel10k/powerlevel10k"
 # Add wisely, as too many plugins slow down shell startup.
 plugins=(git zsh-autosuggestions zsh-syntax-highlighting web-search)
 
-bindkey '§' autosuggest-accept
-
 source $ZSH/oh-my-zsh.sh
+
+bindkey '`' autosuggest-accept
 
 # User configuration
 
@@ -196,4 +196,57 @@ outline() {
 
   networksetup -setsocksfirewallproxystate "$INTERFACE" off
 }
+
+export EDITOR="neovide"
+function y() {
+	local tmp="$(mktemp -t "yazi-cwd.XXXXXX")" cwd
+	yazi "$@" --cwd-file="$tmp"
+	IFS= read -r -d '' cwd < "$tmp"
+	[ -n "$cwd" ] && [ "$cwd" != "$PWD" ] && builtin cd -- "$cwd"
+	rm -f -- "$tmp"
+}
+
+# Set up fzf key bindings and fuzzy completion
+eval "$(fzf --zsh)"
+
+alias inv='nvim $(fzf -m --preview="bat --color=always {}")'
+
+# # Homebrew OpenJDK
+# export JAVA_HOME="/opt/homebrew/opt/openjdk/libexec/openjdk.jdk/Contents/Home"
+#
+# # Prefer this java first
+# export PATH="$JAVA_HOME/bin:$PATH"
+# # Java
+export PATH="/Library/TeX/texbin:$PATH"
+
+alias pi="cd ~/Home/itmo/pi"
+alias pih="cd ~/Home/itmo/pi/hw"
+
+alias ad="cd ~/Home/itmo/ad"
+alias adl="cd ~/Home/itmo/ad/lab"
+alias adh="cd ~/Home/itmo/ad/hw"
+
+alias dm="cd ~/Home/itmo/dm"
+alias dml="cd ~/Home/itmo/dm/lab"
+alias dmh="cd ~/Home/itmo/dm/hw"
+
+alias ca="cd ~/Home/itmo/ca"
+alias cal="cd ~/Home/itmo/ca/lab"
+
+alias ma="cd ~/Home/itmo/ma"
+alias mah="cd ~/Home/itmo/ma/hw"
+alias mal="cd ~/Home/itmo/ma/lec"
+alias mae="cd ~/Home/itmo/ma/exm"
+
+alias la="cd ~/Home/itmo/la"
+
+alias i="cd ~/Home/itmo"
+alias h="cd ~/Home"
+
+alias nv="nvim"
+alias nd="neovide"
+
+alias cfg="cd ~/.config"
+alias tmp="cd ~/Home/tmp"
+alias dl="cd ~/Downloads"
 

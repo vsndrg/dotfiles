@@ -197,7 +197,7 @@ outline() {
   networksetup -setsocksfirewallproxystate "$INTERFACE" off
 }
 
-export EDITOR="neovide"
+export EDITOR="$HOME/.local/bin/neovide-patched"
 function y() {
 	local tmp="$(mktemp -t "yazi-cwd.XXXXXX")" cwd
 	yazi "$@" --cwd-file="$tmp"
@@ -220,7 +220,7 @@ alias inv='nvim $(fzf -m --preview="bat --color=always {}")'
 export PATH="/Library/TeX/texbin:$PATH"
 
 alias pi="cd ~/Home/itmo/pi"
-alias pih="cd ~/Home/itmo/pi/hw"
+alias pih="cd ~/Home/itmo/pi/hw/paradigms"
 
 alias ad="cd ~/Home/itmo/ad"
 alias adl="cd ~/Home/itmo/ad/lab"
@@ -238,15 +238,85 @@ alias mah="cd ~/Home/itmo/ma/hw"
 alias mal="cd ~/Home/itmo/ma/lec"
 alias mae="cd ~/Home/itmo/ma/exm"
 
+alias cpp="cd ~/Home/itmo/cpp"
+alias cpph="cd ~/Home/itmo/cpp/hw"
+
 alias la="cd ~/Home/itmo/la"
+
+alias lg="cd ~/Home/itmo/lg"
+alias lgh="cd ~/Home/itmo/lg/hw"
+alias lgn="cd ~/Home/itmo/lg/notes"
 
 alias i="cd ~/Home/itmo"
 alias h="cd ~/Home"
 
 alias nv="nvim"
-alias nd="neovide"
+alias nd="$HOME/.local/bin/neovide-patched --fork"  # 0.16.2 + metal display-link vsync fix (key-repeat halving); patch: ~/.config/nvim/lua/diag/neovide-0.16.2-metal-displaylink-vsync.patch
 
 alias cfg="cd ~/.config"
 alias tmp="cd ~/Home/tmp"
 alias dl="cd ~/Downloads"
 
+alias stk="cd ~/Home/stark"
+
+alias tp="cd ~/Home/teach/prog"
+
+alias oc="opencode"
+
+# Start an nREPL with cider middleware in the current directory.
+# Writes .nrepl-port here; Conjure (in nvim) auto-connects to it.
+alias cnrepl='clj -M:nrepl'
+
+alias mcd=take
+
+alias cls=clear
+alias pcp="pwd | pbcopy"
+
+cpf() {
+  if (( $# != 1 )); then
+    print -ru2 -- 'Usage: cpf FILE'
+    return 2
+  fi
+
+  local file_path=$1
+  if [[ ! -e $file_path && ! -L $file_path ]]; then
+    print -ru2 -- "cpf: no such file: $file_path"
+    return 1
+  fi
+  [[ $file_path = /* ]] || file_path=$PWD/$file_path
+
+  /usr/bin/osascript - "$file_path" >/dev/null <<'APPLESCRIPT'
+use framework "AppKit"
+
+on run arguments
+  set fileURL to current application's NSURL's fileURLWithPath:(item 1 of arguments)
+  set board to current application's NSPasteboard's generalPasteboard()
+  board's clearContents()
+  if not ((board's writeObjects:{fileURL}) as boolean) then error "Could not copy file to clipboard"
+end run
+APPLESCRIPT
+}
+
+# opencode
+export PATH=/Users/vsndrg/.opencode/bin:$PATH
+
+
+# ITMO homework: short symlinks for repos, e.g.
+# nature-se-go-2026-c118-lrucache-a117-vsndrg -> lrucache
+# nature-cs-2026-c126-isa_amd64-a99-vsndrg -> isa_amd64
+_itmo_hw_dirs=(~/Home/itmo/go/hw ~/Home/itmo/os/hw)
+_itmo_hw_links() {
+  local hw d name
+  for hw in $_itmo_hw_dirs; do
+    [[ $PWD == $hw* ]] || continue
+    for d in $hw/nature-*(N/); do
+      [[ -L $d ]] && continue
+      name=${${d:t}#nature-*-c<->-}
+      name=${name%-a<->-*}
+      [[ -e $hw/$name || -L $hw/$name ]] || ln -s ${d:t} $hw/$name
+    done
+  done
+}
+autoload -Uz add-zsh-hook
+add-zsh-hook precmd _itmo_hw_links
+export PATH="$HOME/.local/bin:$PATH"

@@ -1,15 +1,27 @@
-// Build: clang -fobjc-arc -framework AppKit -framework ApplicationServices pf.m -o pf
+// Build and install with install-clipboard-tools.sh.
 // Install lsc as a symlink to pf.
 #import <AppKit/AppKit.h>
 #import <ApplicationServices/ApplicationServices.h>
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #include <sys/stat.h>
+
+@interface ClipboardEntry : NSObject
+@property (nonatomic, strong) NSURL *source;
+@property (nonatomic, strong) NSData *data;
+@property (nonatomic, copy) NSString *text;
+@property (nonatomic, copy) NSString *type;
+@property (nonatomic, copy) NSString *name;
+@end
+
+@implementation ClipboardEntry
+@end
 
 static int fail(NSString *message) {
     fprintf(stderr, "%s: %s\n", getprogname(), message.UTF8String);
     return 1;
 }
 
-static OSStatus readFileURLs(PasteboardRef clipboard, NSMutableArray<NSURL *> *urls) {
+static OSStatus readFileURLs(PasteboardRef clipboard, NSMutableDictionary<NSNumber *, NSURL *> *urls) {
     PasteboardSynchronize(clipboard);
     ItemCount count;
     OSStatus status = PasteboardGetItemCount(clipboard, &count);
@@ -29,19 +41,18 @@ static OSStatus readFileURLs(PasteboardRef clipboard, NSMutableArray<NSURL *> *u
         NSString *string = [[NSString alloc] initWithData:CFBridgingRelease(bytes)
                                                  encoding:NSUTF8StringEncoding];
         NSURL *url = string ? [NSURL URLWithString:string] : nil;
-        if (!url.isFileURL || !url.path.isAbsolutePath ||
-            (url.host.length && ![url.host.lowercaseString isEqualToString:@"localhost"])) {
-            return badPasteboardFlavorErr;
+        if (url.isFileURL && url.path.isAbsolutePath &&
+            (!url.host.length || [url.host.lowercaseString isEqualToString:@"localhost"])) {
+            urls[@(index - 1)] = url;
         }
-        [urls addObject:url];
     }
     return noErr;
 }
 
-static NSArray<NSURL *> *clipboardFiles(NSPasteboard *board) {
+static NSDictionary<NSNumber *, NSURL *> *clipboardFileURLs(void) {
     PasteboardRef clipboard;
     OSStatus status = PasteboardCreate(kPasteboardClipboard, &clipboard);
-    NSMutableArray<NSURL *> *urls = [NSMutableArray array];
+    NSMutableDictionary<NSNumber *, NSURL *> *urls = [NSMutableDictionary dictionary];
     if (status == noErr) {
         status = readFileURLs(clipboard, urls);
         CFRelease(clipboard);
@@ -52,38 +63,90 @@ static NSArray<NSURL *> *clipboardFiles(NSPasteboard *board) {
         return nil;
     }
 
-    // Some apps publish the full list of paths separately from the individual URLs.
+    return urls;
+}
+
+static ClipboardEntry *fileEntry(NSURL *source) {
+    ClipboardEntry *entry = [ClipboardEntry new];
+    entry.source = source;
+    entry.name = source.lastPathComponent;
+    return entry;
+}
+
+static UTType *typeForFlavor(NSString *flavor) {
+    return [UTType typeWithIdentifier:flavor] ?:
+        ([flavor containsString:@"/"] ? [UTType typeWithMIMEType:flavor] : nil);
+}
+
+static NSString *filenameExtension(UTType *type) {
+    return type.preferredFilenameExtension ?:
+        ([type conformsToType:UTTypePlainText] ? UTTypePlainText.preferredFilenameExtension : nil);
+}
+
+static ClipboardEntry *dataEntry(NSPasteboardItem *item, UTType *requestedType) {
+    NSArray<NSPasteboardType> *flavors = item.types;
+    NSMutableOrderedSet<NSPasteboardType> *candidates = [NSMutableOrderedSet orderedSet];
+    if (requestedType) {
+        for (NSPasteboardType flavor in flavors) {
+            if ([typeForFlavor(flavor) conformsToType:requestedType]) [candidates addObject:flavor];
+        }
+    }
+    for (NSPasteboardType flavor in flavors) {
+        if (filenameExtension(typeForFlavor(flavor)).length) [candidates addObject:flavor];
+    }
+    [candidates addObjectsFromArray:flavors];
+
+    ClipboardEntry *entry = [ClipboardEntry new];
+    entry.type = candidates.firstObject ?: UTTypeItem.identifier;
+    for (NSPasteboardType flavor in candidates) {
+        NSData *data = [item dataForType:flavor];
+        if (!data) continue;
+        entry.type = flavor;
+        entry.data = data;
+        if ([typeForFlavor(flavor) conformsToType:UTTypePlainText]) {
+            entry.text = [item stringForType:NSPasteboardTypeString] ?: [item stringForType:flavor];
+        }
+        break;
+    }
+    NSString *extension = filenameExtension(typeForFlavor(entry.type));
+    if (!extension.length || ![extension isEqualToString:extension.lastPathComponent]) extension = @"bin";
+    entry.name = [@"clipboard" stringByAppendingPathExtension:extension];
+    return entry;
+}
+
+static NSArray<ClipboardEntry *> *clipboardEntries(NSPasteboard *board, UTType *requestedType) {
+    NSDictionary<NSNumber *, NSURL *> *urls = clipboardFileURLs();
+    if (!urls) return nil;
+
+    NSMutableArray<ClipboardEntry *> *entries = [NSMutableArray array];
+    NSArray<NSPasteboardItem *> *items = board.pasteboardItems;
+    // Some apps publish a full filename list alongside an incomplete set of file URLs.
     id paths = [board propertyListForType:@"NSFilenamesPboardType"];
-    if ([paths isKindOfClass:NSArray.class] && [paths count] > urls.count) {
-        NSMutableArray<NSURL *> *complete = [NSMutableArray array];
+    BOOL useFilenameList = [paths isKindOfClass:NSArray.class] && [paths count] > urls.count;
+    if (useFilenameList) {
         for (id path in paths) {
             if (![path isKindOfClass:NSString.class] || ![path isAbsolutePath]) {
                 fail(@"clipboard contains an invalid file path");
                 return nil;
             }
-            [complete addObject:[NSURL fileURLWithPath:path]];
+            [entries addObject:fileEntry([NSURL fileURLWithPath:path])];
         }
-        return complete;
     }
-    return urls;
-}
 
-static NSString *askFilename(void) {
-    fputs("Имя файла: ", stderr);
-    char *line = NULL;
-    size_t capacity = 0;
-    ssize_t length = getline(&line, &capacity, stdin);
-    if (length > 0 && line[length - 1] == '\n') --length;
-    NSString *name = length > 0 && !memchr(line, '\0', (size_t)length)
-        ? [[NSString alloc] initWithBytes:line length:(NSUInteger)length encoding:NSUTF8StringEncoding]
-        : nil;
-    free(line);
-    if (!name.length || [name containsString:@"/"] || [name isEqualToString:@"."] ||
-        [name isEqualToString:@".."]) {
-        fail(@"provide a file name without a directory");
-        return nil;
+    NSUInteger count = items.count;
+    for (NSNumber *index in urls) count = MAX(count, index.unsignedIntegerValue + 1);
+    for (NSUInteger index = 0; index < count; ++index) {
+        NSURL *url = urls[@(index)];
+        if (url) {
+            if (!useFilenameList) [entries addObject:fileEntry(url)];
+        } else if (index < items.count) {
+            NSPasteboardItem *item = items[index];
+            if (useFilenameList && ([item.types containsObject:NSPasteboardTypeFileURL] ||
+                                   [item.types containsObject:@"NSFilenamesPboardType"])) continue;
+            [entries addObject:dataEntry(item, count == 1 && !useFilenameList ? requestedType : nil)];
+        }
     }
-    return name;
+    return entries;
 }
 
 static NSURL *publishFile(NSURL *staged, NSURL *directory, NSString *name) {
@@ -104,25 +167,25 @@ static NSURL *publishFile(NSURL *staged, NSURL *directory, NSString *name) {
     }
 }
 
-static int paste(NSArray<NSURL *> *sources, NSString *text, NSString *path) {
+static int paste(NSArray<ClipboardEntry *> *entries, NSString *path) {
     NSFileManager *files = NSFileManager.defaultManager;
     NSURL *target = [NSURL fileURLWithPath:path];
     BOOL isDirectory = NO;
     BOOL exists = [files fileExistsAtPath:target.path isDirectory:&isDirectory];
-    BOOL useDirectory = isDirectory || sources.count > 1 || [path hasSuffix:@"/"];
+    BOOL useDirectory = isDirectory || entries.count > 1 || [path hasSuffix:@"/"];
     if (useDirectory && exists && !isDirectory) {
         return fail([NSString stringWithFormat:@"destination is not a directory: %@", target.path]);
     }
 
     NSURL *directory = useDirectory ? target : target.URLByDeletingLastPathComponent;
     NSString *destinationName = useDirectory ? nil : target.lastPathComponent;
-    if (text && !destinationName) {
-        destinationName = askFilename();
-        if (!destinationName) return 1;
-    }
-
     NSString *targetDirectory = directory.URLByResolvingSymlinksInPath.path;
-    for (NSURL *source in sources) {
+    for (ClipboardEntry *entry in entries) {
+        NSURL *source = entry.source;
+        if (!source) {
+            if (!entry.data) return fail([NSString stringWithFormat:@"clipboard data is unavailable: %@", entry.type]);
+            continue;
+        }
         struct stat info;
         if (lstat(source.fileSystemRepresentation, &info) != 0) {
             int code = errno;
@@ -154,28 +217,20 @@ static int paste(NSArray<NSURL *> *sources, NSString *text, NSString *path) {
         scratchError = errno;
     }
     free(scratchPath);
-    if (!scratch) return fail([NSString stringWithFormat:@"%@ : %s", directory.path, strerror(scratchError)]);
+    if (!scratch) return fail([NSString stringWithFormat:@"%@: %s", directory.path, strerror(scratchError)]);
 
     @try {
         NSMutableArray<NSURL *> *stagedFiles = [NSMutableArray array];
-        NSMutableArray<NSString *> *names = [NSMutableArray array];
-        if (text) {
-            NSURL *staged = [scratch URLByAppendingPathComponent:@"text"];
-            if (![text writeToURL:staged atomically:NO encoding:NSUTF8StringEncoding error:&error]) {
-                return fail(error.localizedDescription);
-            }
-            [stagedFiles addObject:staged];
-            [names addObject:destinationName];
-        }
-        for (NSURL *source in sources) {
+        for (ClipboardEntry *entry in entries) {
             NSString *index = [NSString stringWithFormat:@"%lu", (unsigned long)stagedFiles.count];
             NSURL *staged = [scratch URLByAppendingPathComponent:index];
-            if (![files copyItemAtURL:source toURL:staged error:&error]) return fail(error.localizedDescription);
+            BOOL written = entry.source ? [files copyItemAtURL:entry.source toURL:staged error:&error]
+                : [entry.data writeToURL:staged options:0 error:&error];
+            if (!written) return fail(error.localizedDescription);
             [stagedFiles addObject:staged];
-            [names addObject:destinationName ?: source.lastPathComponent];
         }
         for (NSUInteger index = 0; index < stagedFiles.count; ++index) {
-            NSURL *destination = publishFile(stagedFiles[index], directory, names[index]);
+            NSURL *destination = publishFile(stagedFiles[index], directory, destinationName ?: entries[index].name);
             if (!destination) return 1;
             puts(destination.fileSystemRepresentation);
         }
@@ -185,18 +240,49 @@ static int paste(NSArray<NSURL *> *sources, NSString *text, NSString *path) {
     }
 }
 
-static int listClipboard(NSArray<NSURL *> *sources, NSString *text) {
-    if (text) {
-        NSData *bytes = [text dataUsingEncoding:NSUTF8StringEncoding];
-        if (!bytes || (bytes.length && fwrite(bytes.bytes, 1, bytes.length, stdout) != bytes.length)) {
-            return fail(@"could not print clipboard text");
+static int listDiskPaths(NSArray<NSString *> *paths) {
+    if (!paths.count) return 0;
+    if (fflush(stdout) == EOF) return fail(@"could not print clipboard information");
+
+    NSTask *ls = [NSTask new];
+    ls.executableURL = [NSURL fileURLWithPath:@"/bin/ls"];
+    // List the copied paths themselves in clipboard order, including directories and dotfiles.
+    ls.arguments = [@[@"-ladf", @"--"] arrayByAddingObjectsFromArray:paths];
+    NSError *error;
+    if (![ls launchAndReturnError:&error]) return fail(error.localizedDescription);
+    [ls waitUntilExit];
+    return ls.terminationStatus;
+}
+
+static int listClipboard(NSArray<ClipboardEntry *> *entries) {
+    NSMutableArray<NSString *> *paths = [NSMutableArray array];
+    for (NSUInteger index = 0; index < entries.count; ++index) {
+        ClipboardEntry *entry = entries[index];
+        if (entry.source) {
+            [paths addObject:entry.source.path];
+            continue;
         }
-    } else {
-        for (NSURL *source in sources) {
-            if (puts(source.path.UTF8String) == EOF) return fail(@"could not print clipboard paths");
+
+        int status = listDiskPaths(paths);
+        if (status) return status;
+        [paths removeAllObjects];
+        if (entry.text) {
+            NSData *bytes = [entry.text dataUsingEncoding:NSUTF8StringEncoding];
+            if (!bytes || (bytes.length && fwrite(bytes.bytes, 1, bytes.length, stdout) != bytes.length)) {
+                return fail(@"could not print clipboard text");
+            }
+            if (index + 1 < entries.count && ![entry.text hasSuffix:@"\n"]) putchar('\n');
+            continue;
+        }
+
+        int printed = entry.data ? printf("%lu %s\n", (unsigned long)entry.data.length, entry.name.UTF8String)
+            : puts(entry.name.UTF8String);
+        if (printed < 0) {
+            return fail(@"could not print clipboard information");
         }
     }
-    return fflush(stdout) == 0 ? 0 : fail(@"could not print clipboard contents");
+    if (fflush(stdout) == EOF) return fail(@"could not print clipboard contents");
+    return listDiskPaths(paths);
 }
 
 int main(int argc, const char *argv[]) {
@@ -213,13 +299,18 @@ int main(int argc, const char *argv[]) {
             : @".";
         if (!path.length) return fail(@"destination path is empty");
 
+        UTType *requestedType = nil;
+        if (!listing && path.pathExtension.length && ![path hasSuffix:@"/"]) {
+            BOOL directory = NO;
+            [NSFileManager.defaultManager fileExistsAtPath:path isDirectory:&directory];
+            if (!directory) requestedType = [UTType typeWithFilenameExtension:path.pathExtension];
+        }
         NSPasteboard *board = NSPasteboard.generalPasteboard;
         NSInteger change = board.changeCount;
-        NSArray<NSURL *> *sources = clipboardFiles(board);
-        if (!sources) return 1;
-        NSString *text = sources.count ? nil : [board stringForType:NSPasteboardTypeString];
+        NSArray<ClipboardEntry *> *entries = clipboardEntries(board, requestedType);
+        if (!entries) return 1;
         if (board.changeCount != change) return fail(@"clipboard changed while reading it");
-        if (!sources.count && !text) return fail(@"clipboard has no files or plain text");
-        return listing ? listClipboard(sources, text) : paste(sources, text, path);
+        if (!entries.count) return fail(@"clipboard is empty");
+        return listing ? listClipboard(entries) : paste(entries, path);
     }
 }

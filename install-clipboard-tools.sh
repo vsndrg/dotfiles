@@ -16,7 +16,7 @@ trap 'rm -rf "$build_dir"' EXIT
 
 /usr/bin/clang -fobjc-arc -framework AppKit -framework ApplicationServices \
     "$src_dir/cpf.m" -o "$build_dir/cpf-appkit"
-/usr/bin/clang -fobjc-arc -framework AppKit -framework ApplicationServices \
+/usr/bin/clang -fobjc-arc -framework AppKit -framework ApplicationServices -framework UniformTypeIdentifiers \
     "$src_dir/pf.m" -o "$build_dir/pf"
 
 mv "$build_dir/cpf-appkit" "$build_dir/pf" "$bin_dir/"

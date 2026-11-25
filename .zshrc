@@ -273,28 +273,24 @@ alias cls=clear
 alias pcp="pwd | pbcopy"
 
 cpf() {
-  if (( $# != 1 )); then
-    print -ru2 -- 'Usage: cpf FILE'
+  if (( $# == 0 )); then
+    print -ru2 -- 'Usage: cpf FILE [FILE ...]'
     return 2
   fi
 
-  local file_path=$1
-  if [[ ! -e $file_path && ! -L $file_path ]]; then
-    print -ru2 -- "cpf: no such file: $file_path"
-    return 1
-  fi
-  [[ $file_path = /* ]] || file_path=$PWD/$file_path
+  local file_path
+  local -a file_paths
+  for file_path in "$@"; do
+    if [[ ! -e $file_path && ! -L $file_path ]]; then
+      print -ru2 -- "cpf: no such file: $file_path"
+      return 1
+    fi
+    [[ $file_path = /* ]] || file_path=$PWD/$file_path
+    file_paths+=("$file_path")
+  done
 
-  /usr/bin/osascript - "$file_path" >/dev/null <<'APPLESCRIPT'
-use framework "AppKit"
-
-on run arguments
-  set fileURL to current application's NSURL's fileURLWithPath:(item 1 of arguments)
-  set board to current application's NSPasteboard's generalPasteboard()
-  board's clearContents()
-  if not ((board's writeObjects:{fileURL}) as boolean) then error "Could not copy file to clipboard"
-end run
-APPLESCRIPT
+  "$HOME/.local/bin/cpf-appkit" "${file_paths[@]}" || return $?
+  print -rl -- "${file_paths[@]}"
 }
 
 # opencode
